@@ -13,13 +13,12 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2016-12-16
+  ©František Milt 2016-12-21
 
-  Version 0.9
+  Version 1.0
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
-    BitOps   - github.com/ncs-sniper/Lib.BitOps
 
   Sources:
     https://en.wikipedia.org/wiki/CPUID
@@ -38,24 +37,22 @@ unit SimpleCPUID;
   {$MESSAGE FATAL 'Unsupported CPU.'}
 {$IFEND}
 
-{$IF Defined(WINDOWS) or Defined(MSWINDOWS))}
+{$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
 {$ELSE}
-  {$IFNDEF UNIX}
+  {$IF not (Defined(UNIX) or Defined(POSIX))}
     {$MESSAGE FATAL 'Unsupported operating system.'}
-  {$ENDIF}
+  {$IFEND}
 {$IFEND}
 
 {$IFDEF FPC}
-  {$MODE Delphi}
+  {$MODE ObjFPC}{$H+}
   {$ASMMODE Intel}
 {$ENDIF}
 
 {$IFDEF PurePascal}
   {$MESSAGE WARN 'This unit cannot be compiled without ASM.'}
 {$ENDIF}
-
-{$message 'implement retrieval of all leafs/subleafs'}
 
 interface
 
@@ -332,17 +329,31 @@ type
     Function GetLeafCount: Integer;
     Function GetLeaf(Index: Integer): TCPUIDLeaf;
   protected
-    procedure InitStdLeafs; virtual;
+    procedure DeleteLeaf(Index: Integer); virtual;  // only for internal use
+    procedure InitLeafs(Mask: UInt32); virtual;
+    procedure InitStdLeafs; virtual;                // standard leafs
     procedure ProcessLeaf_0000_0000; virtual;
     procedure ProcessLeaf_0000_0001; virtual;
     procedure ProcessLeaf_0000_0002; virtual;
     procedure ProcessLeaf_0000_0004; virtual;
     procedure ProcessLeaf_0000_0007; virtual;
-    procedure InitExtLeafs; virtual;
+    procedure ProcessLeaf_0000_000B; virtual;
+    procedure ProcessLeaf_0000_000D; virtual;
+    procedure ProcessLeaf_0000_000F; virtual;
+    procedure ProcessLeaf_0000_0010; virtual;
+    procedure ProcessLeaf_0000_0012; virtual;
+    procedure ProcessLeaf_0000_0014; virtual;
+    procedure ProcessLeaf_0000_0017; virtual;
+    procedure InitPhiLeafs; virtual;                // Intel Xeon Phi leafs
+    procedure InitHpvLeafs; virtual;                // hypervisor leafs
+    procedure InitExtLeafs; virtual;                // extended leafs
     procedure ProcessLeaf_8000_0001; virtual;
     procedure ProcessLeaf_8000_0002_to_8000_0004; virtual;
+    procedure ProcessLeaf_8000_001D; virtual;
+    procedure InitTNMLeafs; virtual;                // Transmeta leafs
+    procedure InitCNTLeafs; virtual;                // Centaur leafs
   public
-    constructor Create(Initialize: Boolean = True);
+    constructor Create(DoInitialize: Boolean = True);
     destructor Destroy; override;
     procedure Initialize; virtual;
     procedure Finalize; virtual;
@@ -371,7 +382,7 @@ type
     class Function SetThreadAffinity(ProcessorMask: PtrUInt): PtrUInt; virtual;
   public
     class Function ProcessorAvailable(ProcessorID: Integer): Boolean; virtual;
-    constructor Create(ProcessorID: Integer = 0; Initialize: Boolean = True);
+    constructor Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True);
     procedure Initialize; override;
   published
     property ProcessorID: Integer read fProcessorID write fProcessorID;
@@ -380,26 +391,47 @@ type
 implementation
 
 uses
-  {$IFDEF Windows}Windows{$ELSE}unixtype, pthreads{$ENDIF}, SysUtils, BitOps;
+  {$IFDEF Windows}Windows{$ELSE}unixtype, pthreads{$ENDIF}, SysUtils;
 
 {==============================================================================}
 {   Auxiliary routines and declarations                                        }
 {==============================================================================}
 
 {$IFNDEF Windows}
-Function pthread_getaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): LongInt; cdecl; external;
-Function pthread_setaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): LongInt; cdecl; external;
-Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: Pointer): LongInt; cdecl; external;
+Function pthread_getaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
+Function pthread_setaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
+Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: Pointer): cint; cdecl; external;
 Function getpid: pid_t; cdecl; external;
 
 //------------------------------------------------------------------------------
 
-procedure RaiseError(ResultValue: Integer; FuncName: String);
+procedure RaiseError(ResultValue: cint; FuncName: String);
 begin
 If ResultValue <> 0 then
   raise Exception.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
 end;
 {$ENDIF}
+
+//------------------------------------------------------------------------------
+
+Function GetBit(Value: UInt32; Bit: Integer): Boolean;
+begin
+Result := ((Value shr Bit) and 1) <> 0;
+end;
+
+//------------------------------------------------------------------------------
+
+Function SetBit(Value: UInt32; Bit: Integer): UInt32;
+begin
+Result := Value or (UInt32(1) shl Bit);
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetBits(Value: UInt32; FromBit, ToBit: Integer): UInt32;
+begin
+Result := (Value and ($FFFFFFFF shr (31 - ToBit))) shr FromBit;
+end;
 
 {==============================================================================}
 {   Main CPUID routines (ASM)                                                  }
@@ -617,20 +649,60 @@ end;
 {   TSimpleCPUID - protected methods                                           }
 {------------------------------------------------------------------------------}
 
-procedure TSimpleCPUID.InitStdLeafs;
+procedure TSimpleCPUID.DeleteLeaf(Index: Integer);
+var
+  i:  Integer;
+begin
+If (Index >= Low(fLeafs)) and (Index <= High(fLeafs)) then
+  begin
+    For i := Index to Pred(High(fLeafs)) do
+      fLeafs[i] := fLeafs[i + 1];
+    SetLength(fLeafs,Length(fLeafs) - 1);
+  end
+else raise Exception.CreateFmt('TSimpleCPUID.DeleteLeaf: Index (%d) out of bounds.',[Index]);
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitLeafs(Mask: UInt32);
 var
   Temp: TCPUIDResult;
+  Cnt:  Integer;
   i:    Integer;
 begin
 // get leaf count
-CPUID(0,Addr(Temp));
-SetLength(fLeafs,Temp.EAX + 1);
-// load all standard leafs
-For i := Low(fLeafs) to High(fLeafs) do
+CPUID(Mask,Addr(Temp));
+If (Temp.EAX and $FFFF0000) = Mask then
   begin
-    fLeafs[i].ID := UInt32(i);
-    CPUID(fLeafs[i].ID,Addr(fLeafs[i].Data));
+    Cnt := Length(fLeafs);
+    SetLength(fLeafs,Length(fLeafs) + Integer(Temp.EAX and not Mask) + 1);
+    // load all leafs
+    For i := Cnt to High(fLeafs) do
+      begin
+        fLeafs[i].ID := UInt32(i - Cnt) or Mask;
+        CPUID(fLeafs[i].ID,Addr(fLeafs[i].Data));
+      end;
   end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitStdLeafs;
+begin
+InitLeafs($00000000);
+// process individual leafs
+ProcessLeaf_0000_0000;
+ProcessLeaf_0000_0001;
+ProcessLeaf_0000_0002;
+ProcessLeaf_0000_0004;
+ProcessLeaf_0000_0007;
+ProcessLeaf_0000_000B;
+ProcessLeaf_0000_000D;
+ProcessLeaf_0000_000F;
+ProcessLeaf_0000_0010;
+ProcessLeaf_0000_0012;
+ProcessLeaf_0000_0014;
+ProcessLeaf_0000_0017;
 end;
 
 //------------------------------------------------------------------------------
@@ -690,68 +762,68 @@ If Index >= 0 then
     with fInfo.ProcessorFeatures do
       begin
       {ECX register}
-        SSE3         := BT(fLeafs[Index].Data.ECX,0);
-        PCLMULQDQ    := BT(fLeafs[Index].Data.ECX,1);
-        DTES64       := BT(fLeafs[Index].Data.ECX,2);
-        MONITOR      := BT(fLeafs[Index].Data.ECX,3);
-        DS_CPL       := BT(fLeafs[Index].Data.ECX,4);
-        VMX          := BT(fLeafs[Index].Data.ECX,5);
-        SMX          := BT(fLeafs[Index].Data.ECX,6);
-        EIST         := BT(fLeafs[Index].Data.ECX,7);
-        TM2          := BT(fLeafs[Index].Data.ECX,8);
-        SSSE3        := BT(fLeafs[Index].Data.ECX,9);
-        CNXT_ID      := BT(fLeafs[Index].Data.ECX,10);
-        SDBG         := BT(fLeafs[Index].Data.ECX,11);
-        FMA          := BT(fLeafs[Index].Data.ECX,12);
-        CMPXCHG16B   := BT(fLeafs[Index].Data.ECX,13);
-        xTPR         := BT(fLeafs[Index].Data.ECX,14);
-        PDCM         := BT(fLeafs[Index].Data.ECX,15);
-        PCID         := BT(fLeafs[Index].Data.ECX,17);
-        DCA          := BT(fLeafs[Index].Data.ECX,18);
-        SSE4_1       := BT(fLeafs[Index].Data.ECX,19);
-        SSE4_2       := BT(fLeafs[Index].Data.ECX,20);
-        x2APIC       := BT(fLeafs[Index].Data.ECX,21);
-        MOVBE        := BT(fLeafs[Index].Data.ECX,22);
-        POPCNT       := BT(fLeafs[Index].Data.ECX,23);
-        TSC_Deadline := BT(fLeafs[Index].Data.ECX,24);
-        AES          := BT(fLeafs[Index].Data.ECX,25);
-        XSAVE        := BT(fLeafs[Index].Data.ECX,26);
-        OSXSAVE      := BT(fLeafs[Index].Data.ECX,27);
-        AVX          := BT(fLeafs[Index].Data.ECX,28);
-        F16C         := BT(fLeafs[Index].Data.ECX,29);
-        RDRAND       := BT(fLeafs[Index].Data.ECX,30);
-        HYPERVISOR   := BT(fLeafs[Index].Data.ECX,31);
+        SSE3         := GetBit(fLeafs[Index].Data.ECX,0);
+        PCLMULQDQ    := GetBit(fLeafs[Index].Data.ECX,1);
+        DTES64       := GetBit(fLeafs[Index].Data.ECX,2);
+        MONITOR      := GetBit(fLeafs[Index].Data.ECX,3);
+        DS_CPL       := GetBit(fLeafs[Index].Data.ECX,4);
+        VMX          := GetBit(fLeafs[Index].Data.ECX,5);
+        SMX          := GetBit(fLeafs[Index].Data.ECX,6);
+        EIST         := GetBit(fLeafs[Index].Data.ECX,7);
+        TM2          := GetBit(fLeafs[Index].Data.ECX,8);
+        SSSE3        := GetBit(fLeafs[Index].Data.ECX,9);
+        CNXT_ID      := GetBit(fLeafs[Index].Data.ECX,10);
+        SDBG         := GetBit(fLeafs[Index].Data.ECX,11);
+        FMA          := GetBit(fLeafs[Index].Data.ECX,12);
+        CMPXCHG16B   := GetBit(fLeafs[Index].Data.ECX,13);
+        xTPR         := GetBit(fLeafs[Index].Data.ECX,14);
+        PDCM         := GetBit(fLeafs[Index].Data.ECX,15);
+        PCID         := GetBit(fLeafs[Index].Data.ECX,17);
+        DCA          := GetBit(fLeafs[Index].Data.ECX,18);
+        SSE4_1       := GetBit(fLeafs[Index].Data.ECX,19);
+        SSE4_2       := GetBit(fLeafs[Index].Data.ECX,20);
+        x2APIC       := GetBit(fLeafs[Index].Data.ECX,21);
+        MOVBE        := GetBit(fLeafs[Index].Data.ECX,22);
+        POPCNT       := GetBit(fLeafs[Index].Data.ECX,23);
+        TSC_Deadline := GetBit(fLeafs[Index].Data.ECX,24);
+        AES          := GetBit(fLeafs[Index].Data.ECX,25);
+        XSAVE        := GetBit(fLeafs[Index].Data.ECX,26);
+        OSXSAVE      := GetBit(fLeafs[Index].Data.ECX,27);
+        AVX          := GetBit(fLeafs[Index].Data.ECX,28);
+        F16C         := GetBit(fLeafs[Index].Data.ECX,29);
+        RDRAND       := GetBit(fLeafs[Index].Data.ECX,30);
+        HYPERVISOR   := GetBit(fLeafs[Index].Data.ECX,31);
       {EDX register}
-        FPU          := BT(fLeafs[Index].Data.EDX,0);
-        VME          := BT(fLeafs[Index].Data.EDX,1);
-        DE           := BT(fLeafs[Index].Data.EDX,2);
-        PSE          := BT(fLeafs[Index].Data.EDX,3);
-        TSC          := BT(fLeafs[Index].Data.EDX,4);
-        MSR          := BT(fLeafs[Index].Data.EDX,5);
-        PAE          := BT(fLeafs[Index].Data.EDX,6);
-        MCE          := BT(fLeafs[Index].Data.EDX,7);
-        CX8          := BT(fLeafs[Index].Data.EDX,8);
-        APIC         := BT(fLeafs[Index].Data.EDX,9);
-        SEP          := BT(fLeafs[Index].Data.EDX,11);
-        MTRR         := BT(fLeafs[Index].Data.EDX,12);
-        PGE          := BT(fLeafs[Index].Data.EDX,13);
-        MCA          := BT(fLeafs[Index].Data.EDX,14);
-        CMOV         := BT(fLeafs[Index].Data.EDX,15);
-        PAT          := BT(fLeafs[Index].Data.EDX,16);
-        PSE_36       := BT(fLeafs[Index].Data.EDX,17);
-        PSN          := BT(fLeafs[Index].Data.EDX,18);
-        CLFSH        := BT(fLeafs[Index].Data.EDX,19);
-        DS           := BT(fLeafs[Index].Data.EDX,21);
-        ACPI         := BT(fLeafs[Index].Data.EDX,22);
-        MMX          := BT(fLeafs[Index].Data.EDX,23);
-        FXSR         := BT(fLeafs[Index].Data.EDX,24);
-        SSE          := BT(fLeafs[Index].Data.EDX,25);
-        SSE2         := BT(fLeafs[Index].Data.EDX,26);
-        SS           := BT(fLeafs[Index].Data.EDX,27);
-        HTT          := BT(fLeafs[Index].Data.EDX,28);
-        TM           := BT(fLeafs[Index].Data.EDX,29);
-        IA64         := BT(fLeafs[Index].Data.EDX,30);
-        PBE          := BT(fLeafs[Index].Data.EDX,31);
+        FPU          := GetBit(fLeafs[Index].Data.EDX,0);
+        VME          := GetBit(fLeafs[Index].Data.EDX,1);
+        DE           := GetBit(fLeafs[Index].Data.EDX,2);
+        PSE          := GetBit(fLeafs[Index].Data.EDX,3);
+        TSC          := GetBit(fLeafs[Index].Data.EDX,4);
+        MSR          := GetBit(fLeafs[Index].Data.EDX,5);
+        PAE          := GetBit(fLeafs[Index].Data.EDX,6);
+        MCE          := GetBit(fLeafs[Index].Data.EDX,7);
+        CX8          := GetBit(fLeafs[Index].Data.EDX,8);
+        APIC         := GetBit(fLeafs[Index].Data.EDX,9);
+        SEP          := GetBit(fLeafs[Index].Data.EDX,11);
+        MTRR         := GetBit(fLeafs[Index].Data.EDX,12);
+        PGE          := GetBit(fLeafs[Index].Data.EDX,13);
+        MCA          := GetBit(fLeafs[Index].Data.EDX,14);
+        CMOV         := GetBit(fLeafs[Index].Data.EDX,15);
+        PAT          := GetBit(fLeafs[Index].Data.EDX,16);
+        PSE_36       := GetBit(fLeafs[Index].Data.EDX,17);
+        PSN          := GetBit(fLeafs[Index].Data.EDX,18);
+        CLFSH        := GetBit(fLeafs[Index].Data.EDX,19);
+        DS           := GetBit(fLeafs[Index].Data.EDX,21);
+        ACPI         := GetBit(fLeafs[Index].Data.EDX,22);
+        MMX          := GetBit(fLeafs[Index].Data.EDX,23);
+        FXSR         := GetBit(fLeafs[Index].Data.EDX,24);
+        SSE          := GetBit(fLeafs[Index].Data.EDX,25);
+        SSE2         := GetBit(fLeafs[Index].Data.EDX,26);
+        SS           := GetBit(fLeafs[Index].Data.EDX,27);
+        HTT          := GetBit(fLeafs[Index].Data.EDX,28);
+        TM           := GetBit(fLeafs[Index].Data.EDX,29);
+        IA64         := GetBit(fLeafs[Index].Data.EDX,30);
+        PBE          := GetBit(fLeafs[Index].Data.EDX,31);
       end;
   end;
 end;
@@ -763,7 +835,10 @@ var
   Index:  Integer;
   i:      Integer;
 begin
-// this whole function must be run on the same processor, otherwise results will be wrong
+{
+  this whole function must be run on the same processor (core), otherwise
+  results will be wrong
+}
 Index := IndexOf($00000002);
 If Index >= 0 then
   If Byte(fLeafs[Index].Data.EAX) > 0 then
@@ -790,7 +865,7 @@ If Index >= 0 then
       begin
         SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
         fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)] := Temp;
-        CPUID(4,Length(fLeafs[Index].SubLeafs),@Temp);
+        CPUID(4,UInt32(Length(fLeafs[Index].SubLeafs)),@Temp);
       end;
   end;
 end;
@@ -813,77 +888,240 @@ If Index >= 0 then
     with fInfo.ProcessorFeatures do
       begin
       {EBX register}
-        FSGSBASE     := BT(fLeafs[Index].Data.EBX,0);
-        TSC_ADJUST   := BT(fLeafs[Index].Data.EBX,1);
-        SGX          := BT(fLeafs[Index].Data.EBX,2);
-        BMI1         := BT(fLeafs[Index].Data.EBX,3);
-        HLE          := BT(fLeafs[Index].Data.EBX,4);
-        AVX2         := BT(fLeafs[Index].Data.EBX,5);
-        FPDP         := BT(fLeafs[Index].Data.EBX,6);
-        SMEP         := BT(fLeafs[Index].Data.EBX,7);
-        BMI2         := BT(fLeafs[Index].Data.EBX,8);
-        ERMS         := BT(fLeafs[Index].Data.EBX,9);
-        INVPCID      := BT(fLeafs[Index].Data.EBX,10);
-        RTM          := BT(fLeafs[Index].Data.EBX,11);
-        PQM          := BT(fLeafs[Index].Data.EBX,12);
-        FPCSDS       := BT(fLeafs[Index].Data.EBX,13);
-        MPX          := BT(fLeafs[Index].Data.EBX,14);
-        PQE          := BT(fLeafs[Index].Data.EBX,15);
-        AVX512F      := BT(fLeafs[Index].Data.EBX,16);
-        AVX512DQ     := BT(fLeafs[Index].Data.EBX,17);
-        RDSEED       := BT(fLeafs[Index].Data.EBX,18);
-        ADX          := BT(fLeafs[Index].Data.EBX,19);
-        SMAP         := BT(fLeafs[Index].Data.EBX,20);
-        AVX512IFMA   := BT(fLeafs[Index].Data.EBX,21);
-        PCOMMIT      := BT(fLeafs[Index].Data.EBX,22);
-        CLFLUSHOPT   := BT(fLeafs[Index].Data.EBX,23);
-        CLWB         := BT(fLeafs[Index].Data.EBX,24);
-        PT           := BT(fLeafs[Index].Data.EBX,25);
-        AVX512PF     := BT(fLeafs[Index].Data.EBX,26);
-        AVX512ER     := BT(fLeafs[Index].Data.EBX,27);
-        AVX512CD     := BT(fLeafs[Index].Data.EBX,28);
-        SHA          := BT(fLeafs[Index].Data.EBX,29);
-        AVX512BW     := BT(fLeafs[Index].Data.EBX,30);
-        AVX512VL     := BT(fLeafs[Index].Data.EBX,31);
+        FSGSBASE     := GetBit(fLeafs[Index].Data.EBX,0);
+        TSC_ADJUST   := GetBit(fLeafs[Index].Data.EBX,1);
+        SGX          := GetBit(fLeafs[Index].Data.EBX,2);
+        BMI1         := GetBit(fLeafs[Index].Data.EBX,3);
+        HLE          := GetBit(fLeafs[Index].Data.EBX,4);
+        AVX2         := GetBit(fLeafs[Index].Data.EBX,5);
+        FPDP         := GetBit(fLeafs[Index].Data.EBX,6);
+        SMEP         := GetBit(fLeafs[Index].Data.EBX,7);
+        BMI2         := GetBit(fLeafs[Index].Data.EBX,8);
+        ERMS         := GetBit(fLeafs[Index].Data.EBX,9);
+        INVPCID      := GetBit(fLeafs[Index].Data.EBX,10);
+        RTM          := GetBit(fLeafs[Index].Data.EBX,11);
+        PQM          := GetBit(fLeafs[Index].Data.EBX,12);
+        FPCSDS       := GetBit(fLeafs[Index].Data.EBX,13);
+        MPX          := GetBit(fLeafs[Index].Data.EBX,14);
+        PQE          := GetBit(fLeafs[Index].Data.EBX,15);
+        AVX512F      := GetBit(fLeafs[Index].Data.EBX,16);
+        AVX512DQ     := GetBit(fLeafs[Index].Data.EBX,17);
+        RDSEED       := GetBit(fLeafs[Index].Data.EBX,18);
+        ADX          := GetBit(fLeafs[Index].Data.EBX,19);
+        SMAP         := GetBit(fLeafs[Index].Data.EBX,20);
+        AVX512IFMA   := GetBit(fLeafs[Index].Data.EBX,21);
+        PCOMMIT      := GetBit(fLeafs[Index].Data.EBX,22);
+        CLFLUSHOPT   := GetBit(fLeafs[Index].Data.EBX,23);
+        CLWB         := GetBit(fLeafs[Index].Data.EBX,24);
+        PT           := GetBit(fLeafs[Index].Data.EBX,25);
+        AVX512PF     := GetBit(fLeafs[Index].Data.EBX,26);
+        AVX512ER     := GetBit(fLeafs[Index].Data.EBX,27);
+        AVX512CD     := GetBit(fLeafs[Index].Data.EBX,28);
+        SHA          := GetBit(fLeafs[Index].Data.EBX,29);
+        AVX512BW     := GetBit(fLeafs[Index].Data.EBX,30);
+        AVX512VL     := GetBit(fLeafs[Index].Data.EBX,31);
       {ECX register}
-        PREFETCHWT1  := BT(fLeafs[Index].Data.ECX,0);
-        AVX512VBMI   := BT(fLeafs[Index].Data.ECX,1);
-        UMIP         := BT(fLeafs[Index].Data.ECX,2);
-        PKU          := BT(fLeafs[Index].Data.ECX,3);
-        OSPKE        := BT(fLeafs[Index].Data.ECX,4);
-        CET          := BT(fLeafs[Index].Data.ECX,7);
-        VA57         := BT(fLeafs[Index].Data.ECX,16);
+        PREFETCHWT1  := GetBit(fLeafs[Index].Data.ECX,0);
+        AVX512VBMI   := GetBit(fLeafs[Index].Data.ECX,1);
+        UMIP         := GetBit(fLeafs[Index].Data.ECX,2);
+        PKU          := GetBit(fLeafs[Index].Data.ECX,3);
+        OSPKE        := GetBit(fLeafs[Index].Data.ECX,4);
+        CET          := GetBit(fLeafs[Index].Data.ECX,7);
+        VA57         := GetBit(fLeafs[Index].Data.ECX,16);
         MAWAU        := Byte(GetBits(fLeafs[Index].Data.ECX,17,21));
-        RDPID        := BT(fLeafs[Index].Data.ECX,22);
-        SGX_LC       := BT(fLeafs[Index].Data.ECX,30);
+        RDPID        := GetBit(fLeafs[Index].Data.ECX,22);
+        SGX_LC       := GetBit(fLeafs[Index].Data.ECX,30);
       {EDX register}
-        AVX512QVNNIW := BT(fLeafs[Index].Data.EDX,2);
-        AVX512QFMA   := BT(fLeafs[Index].Data.EDX,3);
+        AVX512QVNNIW := GetBit(fLeafs[Index].Data.EDX,2);
+        AVX512QFMA   := GetBit(fLeafs[Index].Data.EDX,3);
       end;
   end;
 end;
 
 //------------------------------------------------------------------------------
 
-procedure TSimpleCPUID.InitExtLeafs;
+procedure TSimpleCPUID.ProcessLeaf_0000_000B;
 var
-  Temp: TCPUIDResult;
-  Cnt:  Integer;
-  i:    Integer;
+  Index:  Integer;
+  Temp:   TCPUIDResult;
 begin
-// get leaf count
-CPUID($80000000,Addr(Temp));
-If (Temp.EAX and $80000000) <> 0 then
+Index := IndexOf($0000000B);
+If Index >= 0 then
   begin
-    Cnt := Length(fLeafs);
-    SetLength(fLeafs,Length(fLeafs) + Integer(Temp.EAX and not $80000000) + 1);
-    // load all extended leafs
-    For i := Cnt to High(fLeafs) do
+    Temp := fLeafs[Index].Data;
+    while GetBits(Temp.ECX,8,15) <> 0 do
       begin
-        fLeafs[i].ID := UInt32(i - Cnt) or $80000000;
-        CPUID(fLeafs[i].ID,Addr(fLeafs[i].Data));
+        SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+        fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)] := Temp;
+        CPUID($B,UInt32(Length(fLeafs[Index].SubLeafs)),@Temp);
       end;
   end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_000D;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($0000000D);
+If Index >= 0 then
+  begin
+    SetLength(fLeafs[Index].SubLeafs,2);
+    fLeafs[Index].SubLeafs[0] := fLeafs[Index].Data;
+    CPUID($D,1,Addr(fLeafs[Index].SubLeafs[1]));
+    For i := 2 to 31 do
+      If GetBit(fLeafs[Index].SubLeafs[0].EAX,i) and GetBit(fLeafs[Index].SubLeafs[1].ECX,i) then
+        begin
+          SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+          CPUID($D,UInt32(i),Addr(fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)]));
+        end;
+    For i := 0 to 31 do
+      If GetBit(fLeafs[Index].SubLeafs[0].EDX,i) and GetBit(fLeafs[Index].SubLeafs[1].EDX,i) then
+        begin
+          SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+          CPUID($D,UInt32(32 + i),Addr(fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)]));
+        end;
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_000F;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($0000000F);
+If Index >= 0 then
+  begin
+    SetLength(fLeafs[Index].SubLeafs,1);
+    fLeafs[Index].SubLeafs[0] := fLeafs[Index].Data;
+    For i := 1 to 31 do
+      If GetBit(fLeafs[Index].Data.EDX,i) then
+        begin
+          SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+          CPUID($F,UInt32(i),Addr(fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)]));
+        end;
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_0010;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($00000010);
+If Index >= 0 then
+  begin
+    SetLength(fLeafs[Index].SubLeafs,1);
+    fLeafs[Index].SubLeafs[0] := fLeafs[Index].Data;
+    For i := 1 to 31 do
+      If GetBit(fLeafs[Index].Data.EBX,i) then
+        begin
+          SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+          CPUID($10,UInt32(i),Addr(fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)]));
+        end;
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_0012;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($00000012);
+If Index >= 0 then
+  begin
+    If fInfo.ProcessorFeatures.SGX then
+      begin
+        SetLength(fLeafs[Index].SubLeafs,1);
+        fLeafs[Index].SubLeafs[0] := fLeafs[Index].Data;
+        For i := 0 to 31 do
+          If GetBit(fLeafs[Index].Data.EAX,i) then
+            begin
+              SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+              CPUID($12,UInt32(i + 1),Addr(fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)]));
+            end;
+      end
+    else DeleteLeaf(Index);
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_0014;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($00000014);
+If Index >= 0 then
+  begin
+    SetLength(fLeafs[Index].SubLeafs,fLeafs[Index].Data.EAX + 1);
+    For i := Low(fLeafs[Index].SubLeafs) to High(fLeafs[Index].SubLeafs) do
+      CPUID($14,UInt32(i),Addr(fLeafs[Index].SubLeafs[i]));
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_0000_0017;
+var
+  Index:  Integer;
+  i:      Integer;
+begin
+Index := IndexOf($00000017);
+If Index >= 0 then
+  begin
+    If fLeafs[Index].Data.EAX >= 3 then
+      begin
+        SetLength(fLeafs[Index].SubLeafs,fLeafs[Index].Data.EAX + 1);
+        For i := Low(fLeafs[Index].SubLeafs) to High(fLeafs[Index].SubLeafs) do
+          CPUID($17,UInt32(i),Addr(fLeafs[Index].SubLeafs[i]));
+      end
+    else DeleteLeaf(Index);
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitPhiLeafs;
+begin
+InitLeafs($20000000);
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitHpvLeafs;
+begin
+If fInfo.ProcessorFeatures.HYPERVISOR then
+  begin
+    SetLength(fLeafs,Length(fLeafs) + 7);
+    CPUID($40000000,Addr(fLeafs[High(fLeafs) - 6].Data));
+    CPUID($40000001,Addr(fLeafs[High(fLeafs) - 5].Data));
+    CPUID($40000002,Addr(fLeafs[High(fLeafs) - 4].Data));
+    CPUID($40000003,Addr(fLeafs[High(fLeafs) - 3].Data));
+    CPUID($40000004,Addr(fLeafs[High(fLeafs) - 2].Data));
+    CPUID($40000005,Addr(fLeafs[High(fLeafs) - 1].Data));
+    CPUID($40000006,Addr(fLeafs[High(fLeafs)].Data));
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitExtLeafs;
+begin
+InitLeafs($80000000);
+// process individual leafs
+ProcessLeaf_8000_0001;
+ProcessLeaf_8000_0002_to_8000_0004;
+ProcessLeaf_8000_001D;
 end;
 
 //------------------------------------------------------------------------------
@@ -899,62 +1137,62 @@ If Index >= 0 then
     with fInfo.ExtendedProcessorFeatures do
       begin
       {ECX register}
-        AHF64     := BT(fLeafs[Index].Data.ECX,0);
-        CMP       := BT(fLeafs[Index].Data.ECX,1);
-        SVM       := BT(fLeafs[Index].Data.ECX,2);
-        EAS       := BT(fLeafs[Index].Data.ECX,3);
-        CR8D      := BT(fLeafs[Index].Data.ECX,4);
-        LZCNT     := BT(fLeafs[Index].Data.ECX,5);
-        ABM       := BT(fLeafs[Index].Data.ECX,5);
-        SSE4A     := BT(fLeafs[Index].Data.ECX,6);
-        MSSE      := BT(fLeafs[Index].Data.ECX,7);
-        _3DNowP   := BT(fLeafs[Index].Data.ECX,8);
-        OSVW      := BT(fLeafs[Index].Data.ECX,9);
-        IBS       := BT(fLeafs[Index].Data.ECX,10);
-        XOP       := BT(fLeafs[Index].Data.ECX,11);
-        SKINIT    := BT(fLeafs[Index].Data.ECX,12);
-        WDT       := BT(fLeafs[Index].Data.ECX,13);
-        LWP       := BT(fLeafs[Index].Data.ECX,15);
-        FMA4      := BT(fLeafs[Index].Data.ECX,16);
-        TCE       := BT(fLeafs[Index].Data.ECX,17);
-        NODEID    := BT(fLeafs[Index].Data.ECX,19);
-        TBM       := BT(fLeafs[Index].Data.ECX,21);
-        TOPX      := BT(fLeafs[Index].Data.ECX,22);
-        PCX_CORE  := BT(fLeafs[Index].Data.ECX,23);
-        PCX_NB    := BT(fLeafs[Index].Data.ECX,24);
-        DBX       := BT(fLeafs[Index].Data.ECX,26);
-        PERFTSC   := BT(fLeafs[Index].Data.ECX,27);
-        PCX_L2I   := BT(fLeafs[Index].Data.ECX,28);
-        MON       := BT(fLeafs[Index].Data.ECX,29);
+        AHF64     := GetBit(fLeafs[Index].Data.ECX,0);
+        CMP       := GetBit(fLeafs[Index].Data.ECX,1);
+        SVM       := GetBit(fLeafs[Index].Data.ECX,2);
+        EAS       := GetBit(fLeafs[Index].Data.ECX,3);
+        CR8D      := GetBit(fLeafs[Index].Data.ECX,4);
+        LZCNT     := GetBit(fLeafs[Index].Data.ECX,5);
+        ABM       := GetBit(fLeafs[Index].Data.ECX,5);
+        SSE4A     := GetBit(fLeafs[Index].Data.ECX,6);
+        MSSE      := GetBit(fLeafs[Index].Data.ECX,7);
+        _3DNowP   := GetBit(fLeafs[Index].Data.ECX,8);
+        OSVW      := GetBit(fLeafs[Index].Data.ECX,9);
+        IBS       := GetBit(fLeafs[Index].Data.ECX,10);
+        XOP       := GetBit(fLeafs[Index].Data.ECX,11);
+        SKINIT    := GetBit(fLeafs[Index].Data.ECX,12);
+        WDT       := GetBit(fLeafs[Index].Data.ECX,13);
+        LWP       := GetBit(fLeafs[Index].Data.ECX,15);
+        FMA4      := GetBit(fLeafs[Index].Data.ECX,16);
+        TCE       := GetBit(fLeafs[Index].Data.ECX,17);
+        NODEID    := GetBit(fLeafs[Index].Data.ECX,19);
+        TBM       := GetBit(fLeafs[Index].Data.ECX,21);
+        TOPX      := GetBit(fLeafs[Index].Data.ECX,22);
+        PCX_CORE  := GetBit(fLeafs[Index].Data.ECX,23);
+        PCX_NB    := GetBit(fLeafs[Index].Data.ECX,24);
+        DBX       := GetBit(fLeafs[Index].Data.ECX,26);
+        PERFTSC   := GetBit(fLeafs[Index].Data.ECX,27);
+        PCX_L2I   := GetBit(fLeafs[Index].Data.ECX,28);
+        MON       := GetBit(fLeafs[Index].Data.ECX,29);
       {EDX register}
-        FPU       := BT(fLeafs[Index].Data.EDX,0);
-        VME       := BT(fLeafs[Index].Data.EDX,1);
-        DE        := BT(fLeafs[Index].Data.EDX,2);
-        PSE       := BT(fLeafs[Index].Data.EDX,3);
-        TSC       := BT(fLeafs[Index].Data.EDX,4);
-        MSR       := BT(fLeafs[Index].Data.EDX,5);
-        PAE       := BT(fLeafs[Index].Data.EDX,6);
-        MCE       := BT(fLeafs[Index].Data.EDX,7);
-        CX8       := BT(fLeafs[Index].Data.EDX,8);
-        APIC      := BT(fLeafs[Index].Data.EDX,9);
-        SEP       := BT(fLeafs[Index].Data.EDX,11);
-        MTRR      := BT(fLeafs[Index].Data.EDX,12);
-        PGE       := BT(fLeafs[Index].Data.EDX,13);
-        MCA       := BT(fLeafs[Index].Data.EDX,14);
-        CMOV      := BT(fLeafs[Index].Data.EDX,15);
-        PAT       := BT(fLeafs[Index].Data.EDX,16);
-        PSE36     := BT(fLeafs[Index].Data.EDX,17);
-        MP        := BT(fLeafs[Index].Data.EDX,19);
-        NX        := BT(fLeafs[Index].Data.EDX,20);
-        MMXExt    := BT(fLeafs[Index].Data.EDX,22);
-        MMX       := BT(fLeafs[Index].Data.EDX,23);
-        FXSR      := BT(fLeafs[Index].Data.EDX,24);
-        FFXSR     := BT(fLeafs[Index].Data.EDX,25);
-        PG1G      := BT(fLeafs[Index].Data.EDX,26);
-        TSCP      := BT(fLeafs[Index].Data.EDX,27);
-        LM        := BT(fLeafs[Index].Data.EDX,29);
-        _3DNowExt := BT(fLeafs[Index].Data.EDX,30);
-        _3DNow    := BT(fLeafs[Index].Data.EDX,31);
+        FPU       := GetBit(fLeafs[Index].Data.EDX,0);
+        VME       := GetBit(fLeafs[Index].Data.EDX,1);
+        DE        := GetBit(fLeafs[Index].Data.EDX,2);
+        PSE       := GetBit(fLeafs[Index].Data.EDX,3);
+        TSC       := GetBit(fLeafs[Index].Data.EDX,4);
+        MSR       := GetBit(fLeafs[Index].Data.EDX,5);
+        PAE       := GetBit(fLeafs[Index].Data.EDX,6);
+        MCE       := GetBit(fLeafs[Index].Data.EDX,7);
+        CX8       := GetBit(fLeafs[Index].Data.EDX,8);
+        APIC      := GetBit(fLeafs[Index].Data.EDX,9);
+        SEP       := GetBit(fLeafs[Index].Data.EDX,11);
+        MTRR      := GetBit(fLeafs[Index].Data.EDX,12);
+        PGE       := GetBit(fLeafs[Index].Data.EDX,13);
+        MCA       := GetBit(fLeafs[Index].Data.EDX,14);
+        CMOV      := GetBit(fLeafs[Index].Data.EDX,15);
+        PAT       := GetBit(fLeafs[Index].Data.EDX,16);
+        PSE36     := GetBit(fLeafs[Index].Data.EDX,17);
+        MP        := GetBit(fLeafs[Index].Data.EDX,19);
+        NX        := GetBit(fLeafs[Index].Data.EDX,20);
+        MMXExt    := GetBit(fLeafs[Index].Data.EDX,22);
+        MMX       := GetBit(fLeafs[Index].Data.EDX,23);
+        FXSR      := GetBit(fLeafs[Index].Data.EDX,24);
+        FFXSR     := GetBit(fLeafs[Index].Data.EDX,25);
+        PG1G      := GetBit(fLeafs[Index].Data.EDX,26);
+        TSCP      := GetBit(fLeafs[Index].Data.EDX,27);
+        LM        := GetBit(fLeafs[Index].Data.EDX,29);
+        _3DNowExt := GetBit(fLeafs[Index].Data.EDX,30);
+        _3DNow    := GetBit(fLeafs[Index].Data.EDX,31);
       end;
   end;
 end;
@@ -989,14 +1227,49 @@ SetLength(Str,StrLen(PAnsiChar(Str)));
 fInfo.BrandString := Trim(String(Str));
 end;
 
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_8000_001D;
+var
+  Index:  Integer;
+  Temp:   TCPUIDResult;
+begin
+Index := IndexOf($8000001D);
+If (Index >= 0) and fInfo.ExtendedProcessorFeatures.TOPX then
+  begin
+    Temp := fLeafs[Index].Data;
+    while GetBits(Temp.EAX,0,4) <> 0 do
+      begin
+        SetLength(fLeafs[Index].SubLeafs,Length(fLeafs[Index].SubLeafs) + 1);
+        fLeafs[Index].SubLeafs[High(fLeafs[Index].SubLeafs)] := Temp;
+        CPUID($8000001D,UInt32(Length(fLeafs[Index].SubLeafs)),@Temp);
+      end;
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitTNMLeafs;
+begin
+InitLeafs($80860000);
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.InitCNTLeafs;
+begin
+InitLeafs($C0000000);
+end;
+
 {------------------------------------------------------------------------------}
 {   TSimpleCPUID - public methods                                              }
 {------------------------------------------------------------------------------}
 
-constructor TSimpleCPUID.Create(Initialize: Boolean = True);
+constructor TSimpleCPUID.Create(DoInitialize: Boolean = True);
 begin
 inherited Create;
-If Initialize then Self.Initialize;
+If DoInitialize then
+  Initialize;
 end;
 
 //------------------------------------------------------------------------------
@@ -1016,14 +1289,11 @@ fSupported := SimpleCPUID.CPUIDSupported;
 If fSupported then
   begin
     InitStdLeafs;
-    ProcessLeaf_0000_0000;
-    ProcessLeaf_0000_0001;
-    ProcessLeaf_0000_0002;
-    ProcessLeaf_0000_0004;
-    ProcessLeaf_0000_0007;
+    InitPhiLeafs;
+    InitHpvLeafs;
     InitExtLeafs;
-    ProcessLeaf_8000_0001;
-    ProcessLeaf_8000_0002_to_8000_0004;
+    InitTNMLeafs;
+    InitCNTLeafs;
   end;
 end;
 
@@ -1087,7 +1357,7 @@ begin
 If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
   begin
     If GetProcessAffinityMask(GetCurrentProcess,{%H-}ProcessAffinityMask,{%H-}SystemAffinityMask) then
-      Result := BT(ProcessAffinityMask,ProcessorID)
+      Result := GetBit(ProcessAffinityMask,ProcessorID)
     else
       raise Exception.CreateFmt('GetProcessAffinityMask failed with error 0x%.8x.',[GetLastError]);
   end
@@ -1098,7 +1368,7 @@ begin
 If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
   begin
     RaiseError(sched_getaffinity(getpid,SizeOf(ProcessAffinityMask),@ProcessAffinityMask),'sched_getaffinity');
-    Result := BT(ProcessAffinityMask,ProcessorID);
+    Result := GetBit(ProcessAffinityMask,ProcessorID);
   end
 else Result := False;
 end;
@@ -1106,28 +1376,27 @@ end;
 
 //------------------------------------------------------------------------------
 
-constructor TSimpleCPUIDEx.Create(ProcessorID: Integer = 0; Initialize: Boolean = True);
+constructor TSimpleCPUIDEx.Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True);
 begin
 inherited Create(False);
 fProcessorID := ProcessorID;
-If Initialize then Self.Initialize;
+If DoInitialize then
+  Initialize;
 end;
 
 //------------------------------------------------------------------------------
 
 procedure TSimpleCPUIDEx.Initialize;
 var
-  ProcessorMask:  PtrUInt;
+  OldProcessorMask: PtrUInt;
 begin
 If ProcessorAvailable(fProcessorID) then
   begin
-    ProcessorMask := 0;
-    BitSetTo(ProcessorMask,fProcessorID,True);
-    ProcessorMask := SetThreadAffinity(ProcessorMask);
+    OldProcessorMask := SetThreadAffinity(SetBit(0,fProcessorID));
     try
       inherited Initialize;
     finally
-      SetThreadAffinity(ProcessorMask);
+      SetThreadAffinity(OldProcessorMask);
     end;
   end
 else raise Exception.CreateFmt('TSimpleCPUIDEx.Initialize: Logical processor #%d not available.',[fProcessorID]);
