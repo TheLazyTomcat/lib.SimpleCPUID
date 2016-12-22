@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2016-12-21
+  ©František Milt 2016-12-22
 
-  Version 1.0
+  Version 1.0.1
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -89,8 +89,12 @@ type
 
   TCPUIDLeafs = array of TCPUIDLeaf;
 
+const
+  NullLeaf: TCPUIDResult = (EAX: 0; EBX: 0; ECX: 0; EDX: 0);
+
 //--  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
+type
   TCPUIDManufacturerID = (mnOthers,mnAMD,mnCentaur,mnCyrix,mnIntel,mnTransmeta,
                           mnNationalSemiconductor,mnNexGen,mnRise,mnSiS,mnUMC,
                           mnVIA,mnVortex);
@@ -323,9 +327,11 @@ type
 
   TSimpleCPUID = class(TObject)
   private
-    fSupported:  Boolean;
-    fLeafs:      TCPUIDLeafs;
-    fInfo:       TCPUIDInfo;
+    fIncUnsuppLeafs:  Boolean;
+    fSupported:       Boolean;
+    fLeafs:           TCPUIDLeafs;
+    fInfo:            TCPUIDInfo;
+    fHighestStdLeaf:  TCPUIDResult;
     Function GetLeafCount: Integer;
     Function GetLeaf(Index: Integer): TCPUIDLeaf;
   protected
@@ -345,15 +351,17 @@ type
     procedure ProcessLeaf_0000_0014; virtual;
     procedure ProcessLeaf_0000_0017; virtual;
     procedure InitPhiLeafs; virtual;                // Intel Xeon Phi leafs
-    procedure InitHpvLeafs; virtual;                // hypervisor leafs
+    procedure InitHypLeafs; virtual;                // hypervisor leafs
     procedure InitExtLeafs; virtual;                // extended leafs
     procedure ProcessLeaf_8000_0001; virtual;
     procedure ProcessLeaf_8000_0002_to_8000_0004; virtual;
     procedure ProcessLeaf_8000_001D; virtual;
     procedure InitTNMLeafs; virtual;                // Transmeta leafs
     procedure InitCNTLeafs; virtual;                // Centaur leafs
+    Function EqualsToHighestStdLeaf(Leaf: TCPUIDResult): Boolean; virtual;
+    class Function SameLeafs(A,B: TCPUIDResult): Boolean; virtual;
   public
-    constructor Create(DoInitialize: Boolean = True);
+    constructor Create(DoInitialize: Boolean = True; IncUnsupportedLeafs: Boolean = True);
     destructor Destroy; override;
     procedure Initialize; virtual;
     procedure Finalize; virtual;
@@ -361,6 +369,7 @@ type
     property Info: TCPUIDInfo read fInfo;
     property Leafs[Index: Integer]: TCPUIDLeaf read GetLeaf; default;
   published
+    property IncludeUnsupportedLeafs: Boolean read fIncUnsuppLeafs write fIncUnsuppLeafs;
     property Supported: Boolean read fSupported;
     property Count: Integer read GetLeafCount;
   end;
@@ -382,7 +391,7 @@ type
     class Function SetThreadAffinity(ProcessorMask: PtrUInt): PtrUInt; virtual;
   public
     class Function ProcessorAvailable(ProcessorID: Integer): Boolean; virtual;
-    constructor Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True);
+    constructor Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True; IncUnsupportedLeafs: Boolean = True);
     procedure Initialize; override;
   published
     property ProcessorID: Integer read fProcessorID write fProcessorID;
@@ -672,7 +681,7 @@ var
 begin
 // get leaf count
 CPUID(Mask,Addr(Temp));
-If (Temp.EAX and $FFFF0000) = Mask then
+If ((Temp.EAX and $FFFF0000) = Mask) and not EqualsToHighestStdLeaf(Temp) then
   begin
     Cnt := Length(fLeafs);
     SetLength(fLeafs,Length(fLeafs) + Integer(Temp.EAX and not Mask) + 1);
@@ -690,6 +699,10 @@ end;
 procedure TSimpleCPUID.InitStdLeafs;
 begin
 InitLeafs($00000000);
+If Length(fLeafs) > 0 then
+  fHighestStdLeaf := fLeafs[High(fLeafs)].Data
+else
+  FillChar(fHighestStdLeaf,SizeOf(fHighestStdLeaf),0);
 // process individual leafs
 ProcessLeaf_0000_0000;
 ProcessLeaf_0000_0001;
@@ -1098,18 +1111,31 @@ end;
 
 //------------------------------------------------------------------------------
 
-procedure TSimpleCPUID.InitHpvLeafs;
+procedure TSimpleCPUID.InitHypLeafs;
+
+  procedure AddHypLeaf(ID: UInt32);
+  var
+    Temp: TCPUIDResult;
+  begin
+    CPUID(ID,Addr(Temp));
+    If not EqualsToHighestStdLeaf(Temp) then
+      begin
+        SetLength(fLeafs,Length(fLeafs) + 1);
+        fLeafs[High(fLeafs)].ID := ID;
+        fLeafs[High(fLeafs)].Data := Temp;
+      end;
+  end;
+
 begin
 If fInfo.ProcessorFeatures.HYPERVISOR then
   begin
-    SetLength(fLeafs,Length(fLeafs) + 7);
-    CPUID($40000000,Addr(fLeafs[High(fLeafs) - 6].Data));
-    CPUID($40000001,Addr(fLeafs[High(fLeafs) - 5].Data));
-    CPUID($40000002,Addr(fLeafs[High(fLeafs) - 4].Data));
-    CPUID($40000003,Addr(fLeafs[High(fLeafs) - 3].Data));
-    CPUID($40000004,Addr(fLeafs[High(fLeafs) - 2].Data));
-    CPUID($40000005,Addr(fLeafs[High(fLeafs) - 1].Data));
-    CPUID($40000006,Addr(fLeafs[High(fLeafs)].Data));
+    AddHypLeaf($40000000);
+    AddHypLeaf($40000001);
+    AddHypLeaf($40000002);
+    AddHypLeaf($40000003);
+    AddHypLeaf($40000004);
+    AddHypLeaf($40000005);
+    AddHypLeaf($40000006);
   end;
 end;
 
@@ -1261,13 +1287,28 @@ begin
 InitLeafs($C0000000);
 end;
 
+//------------------------------------------------------------------------------
+
+Function TSimpleCPUID.EqualsToHighestStdLeaf(Leaf: TCPUIDResult): Boolean;
+begin
+Result := SameLeafs(Leaf,fHighestStdLeaf);
+end;
+
+//------------------------------------------------------------------------------
+
+class Function TSimpleCPUID.SameLeafs(A,B: TCPUIDResult): Boolean;
+begin
+Result := (A.EAX = B.EAX) and (A.EBX = B.EBX) and (A.ECX = B.ECX) and (A.EDX = B.EDX);
+end;
+
 {------------------------------------------------------------------------------}
 {   TSimpleCPUID - public methods                                              }
 {------------------------------------------------------------------------------}
 
-constructor TSimpleCPUID.Create(DoInitialize: Boolean = True);
+constructor TSimpleCPUID.Create(DoInitialize: Boolean = True; IncUnsupportedLeafs: Boolean = True);
 begin
 inherited Create;
+fIncUnsuppLeafs := IncUnsupportedLeafs;
 If DoInitialize then
   Initialize;
 end;
@@ -1283,6 +1324,8 @@ end;
 //------------------------------------------------------------------------------
 
 procedure TSimpleCPUID.Initialize;
+var
+  i:  Integer;
 begin
 SetLength(fLeafs,0);
 fSupported := SimpleCPUID.CPUIDSupported;
@@ -1290,11 +1333,14 @@ If fSupported then
   begin
     InitStdLeafs;
     InitPhiLeafs;
-    InitHpvLeafs;
+    InitHypLeafs;
     InitExtLeafs;
     InitTNMLeafs;
     InitCNTLeafs;
   end;
+If not fIncUnsuppLeafs then
+  For i := High(fLeafs) downto Low(fLeafs) do
+    If SameLeafs(fLeafs[i].Data,NullLeaf) then DeleteLeaf(i);
 end;
 
 //------------------------------------------------------------------------------
@@ -1376,9 +1422,9 @@ end;
 
 //------------------------------------------------------------------------------
 
-constructor TSimpleCPUIDEx.Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True);
+constructor TSimpleCPUIDEx.Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True; IncUnsupportedLeafs: Boolean = True);
 begin
-inherited Create(False);
+inherited Create(False,IncUnsupportedLeafs);
 fProcessorID := ProcessorID;
 If DoInitialize then
   Initialize;
