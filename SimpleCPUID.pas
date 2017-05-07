@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2016-12-22
+  ©František Milt 2017-05-07
 
-  Version 1.0.1
+  Version 1.1
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -303,6 +303,35 @@ type
 
 //--  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
 
+  TCPUIDInfo_SupportedExtensions = record
+    X87,          // x87 FPU                                            features.FPU
+    EmulatedX87,  // x87 is emulated                                    CR0[EM:2]=1
+    MMX,          // MMX Technology                                     features.MMX and CR0[EM:2]=0
+    SSE,          // Streaming SIMD Extensions                          features.SSE
+    SSE2,         // Streaming SIMD Extensions 2                        features.SSE2 and SSE
+    SSE3,         // Streaming SIMD Extensions 3                        features.SSE3 and SSE2
+    SSSE3,        // Supplemental Streaming SIMD Extensions 3           features.SSSE3 and SSE3
+    SSE4_1,       // Streaming SIMD Extensions 4.1                      features.SSE4_1 and SSSE3
+    SSE4_2,       // Streaming SIMD Extensions 4.2                      features.SSE4_2 and SSE4_1
+    CRC32,        // CRC32 Instruction                                  SSE4_2
+    POPCNT,       // POPCNT Instruction                                 features.POPCNT and SSE4_2
+    AES,          // AES New Instructions                               features.AES and SSE2
+    PCLMULQDQ,    // PCLMULQDQ Instruction                              features.AES and SSE2
+    AVX,          // Advanced Vector Extensions                         features.OSXSAVE -> XCR0[1..2]=11b and features.AVX
+    F16C,         // 16bit Float Conversion Instructions                features.F16C and AVX
+    FMA,          // Fused-Multiply-Add Instructions                    features.FMA and AVX
+    AVX2,         // Advanced Vector Extensions 2                       features.AVX2 and AVX
+    AVX512F,      // AVX-512 Foundation Instructions                    features.OSXSAVE -> XCR0[1..2]=11b and XCR0[5..7]=111b and features.AVX512F
+    AVX512ER,     // AVX-512 Exponential and Reciprocal Instructions    features.AVX512ER and AVX512F
+    AVX512PF,     // AVX-512 Prefetch Instructions                      features.AVX512PF and AVX512F
+    AVX512CD,     // AVX-512 Conflict Detection Instructions            features.AVX512CD and AVX512F
+    AVX512DQ,     // AVX-512 Doubleword and Quadword Instructions       features.AVX512DQ and AVX512F
+    AVX512BW:     // AVX-512 Byte and Word Instructions                 features.AVX512BW and AVX512F
+      Boolean;
+  end;
+
+//--  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --  --
+
   TCPUIDInfo = record
     // leaf 0x00000000
     ManufacturerID:             TCPUIDManufacturerID;
@@ -319,6 +348,9 @@ type
     ExtendedProcessorFeatures:  TCPUIDInfo_ExtendedFeatures;
     // leaf 0x80000002 - 0x80000004
     BrandString:                String;
+    // some processor extensions whose full support cannot (or should not)
+    // be determined directly from processor features
+    SupportedExtensions:        TCPUIDInfo_SupportedExtensions;
   end;
 
 {==============================================================================}
@@ -358,6 +390,7 @@ type
     procedure ProcessLeaf_8000_001D; virtual;
     procedure InitTNMLeafs; virtual;                // Transmeta leafs
     procedure InitCNTLeafs; virtual;                // Centaur leafs
+    procedure InitSupportedExtensions; virtual;
     Function EqualsToHighestStdLeaf(Leaf: TCPUIDResult): Boolean; virtual;
     class Function SameLeafs(A,B: TCPUIDResult): Boolean; virtual;
   public
@@ -423,7 +456,14 @@ end;
 
 //------------------------------------------------------------------------------
 
-Function GetBit(Value: UInt32; Bit: Integer): Boolean;
+Function GetBit(Value: UInt32; Bit: Integer): Boolean; overload;
+begin
+Result := ((Value shr Bit) and 1) <> 0;
+end;
+
+//   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---
+
+Function GetBit(Value: UInt64; Bit: Integer): Boolean; overload;
 begin
 Result := ((Value shr Bit) and 1) <> 0;
 end;
@@ -440,6 +480,28 @@ end;
 Function GetBits(Value: UInt32; FromBit, ToBit: Integer): UInt32;
 begin
 Result := (Value and ($FFFFFFFF shr (31 - ToBit))) shr FromBit;
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetCR0: NativeUInt; assembler; register;
+asm
+// CR0 is not accessible in user mode (this function will cause exception).
+// If anyone have any idea on how to read CR0 from normal program, let me know.
+{$IFDEF x64}
+  MOV     RAX,  CR0
+{$ELSE x64}
+  MOV     EAX,  CR0
+{$ENDIF x64}
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetXCR0L: UInt32; assembler; register;
+asm
+  XOR     ECX,  ECX
+
+  DB  $0F, $01, $D0 // XGETBV (XCR0.Low -> EAX (result), XCR0.Hi -> EDX)
 end;
 
 {==============================================================================}
@@ -1289,6 +1351,50 @@ end;
 
 //------------------------------------------------------------------------------
 
+procedure TSimpleCPUID.InitSupportedExtensions;
+begin
+with fInfo.SupportedExtensions do
+  begin
+    X87         := fInfo.ProcessorFeatures.FPU;
+  {
+    EmulatedX87 := GetBit(GetCR0,2);
+
+    Control registers CR0 is not accesible in user mode, let's assume the X87
+    is not emulated.
+  }
+    EmulatedX87 := False;
+    MMX         := fInfo.ProcessorFeatures.MMX and not EmulatedX87;
+    SSE         := fInfo.ProcessorFeatures.SSE;
+    SSE2        := fInfo.ProcessorFeatures.SSE2 and SSE;
+    SSE3        := fInfo.ProcessorFeatures.SSE3 and SSE2;
+    SSSE3       := fInfo.ProcessorFeatures.SSSE3 and SSE3;
+    SSE4_1      := fInfo.ProcessorFeatures.SSE4_1 and SSSE3;
+    SSE4_2      := fInfo.ProcessorFeatures.SSE4_2 and SSE4_1;
+    CRC32       := fInfo.ProcessorFeatures.SSE4_2;
+    POPCNT      := fInfo.ProcessorFeatures.POPCNT and SSE4_2;
+    AES         := fInfo.ProcessorFeatures.AES and SSE2;
+    PCLMULQDQ   := fInfo.ProcessorFeatures.PCLMULQDQ and SSE2;
+    If fInfo.ProcessorFeatures.OSXSAVE then
+      AVX := (GetXCR0L and $6 = $6) and fInfo.ProcessorFeatures.AVX
+    else
+      AVX := False;
+    F16C        := fInfo.ProcessorFeatures.F16C and AVX;
+    FMA         := fInfo.ProcessorFeatures.FMA and AVX;
+    AVX2        := fInfo.ProcessorFeatures.AVX2 and AVX;
+    If fInfo.ProcessorFeatures.OSXSAVE then
+      AVX512F := (GetXCR0L and $E6 = $E6) and fInfo.ProcessorFeatures.AVX512F
+    else
+      AVX512F := False;
+    AVX512ER    := fInfo.ProcessorFeatures.AVX512ER and AVX512F;
+    AVX512PF    := fInfo.ProcessorFeatures.AVX512PF and AVX512F;
+    AVX512CD    := fInfo.ProcessorFeatures.AVX512CD and AVX512F;
+    AVX512DQ    := fInfo.ProcessorFeatures.AVX512DQ and AVX512F;
+    AVX512BW    := fInfo.ProcessorFeatures.AVX512BW and AVX512F;
+  end;
+end;
+
+//------------------------------------------------------------------------------
+
 Function TSimpleCPUID.EqualsToHighestStdLeaf(Leaf: TCPUIDResult): Boolean;
 begin
 Result := SameLeafs(Leaf,fHighestStdLeaf);
@@ -1341,6 +1447,7 @@ If fSupported then
 If not fIncUnsuppLeafs then
   For i := High(fLeafs) downto Low(fLeafs) do
     If SameLeafs(fLeafs[i].Data,NullLeaf) then DeleteLeaf(i);
+InitSupportedExtensions;
 end;
 
 //------------------------------------------------------------------------------
