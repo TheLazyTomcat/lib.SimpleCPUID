@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2017-05-07
+  ©František Milt 2017-05-15
 
-  Version 1.1
+  Version 1.1.1
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -433,13 +433,27 @@ type
 implementation
 
 uses
-  {$IFDEF Windows}Windows{$ELSE}unixtype, pthreads{$ENDIF}, SysUtils;
+  {$IFDEF Windows}
+    {$IFDEF FPC}jwaWinBase, {$ENDIF}Windows
+  {$ELSE}
+    unixtype, pthreads
+  {$ENDIF}, SysUtils;
 
 {==============================================================================}
 {   Auxiliary routines and declarations                                        }
 {==============================================================================}
 
-{$IFNDEF Windows}
+{$IFDEF Windows}
+
+{$IF not Declared(PF_FLOATING_POINT_EMULATED)}
+const
+  PF_FLOATING_POINT_EMULATED = 1;
+{$IFEND}
+
+//------------------------------------------------------------------------------
+
+{$ELSE}
+
 Function pthread_getaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
 Function pthread_setaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
 Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: Pointer): cint; cdecl; external;
@@ -452,6 +466,7 @@ begin
 If ResultValue <> 0 then
   raise Exception.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
 end;
+
 {$ENDIF}
 
 //------------------------------------------------------------------------------
@@ -1359,10 +1374,14 @@ with fInfo.SupportedExtensions do
   {
     EmulatedX87 := GetBit(GetCR0,2);
 
-    Control registers CR0 is not accesible in user mode, let's assume the X87
-    is not emulated.
+    Control registers CR0 is not accesible in user mode, let's use the OS.
   }
+  {$IFDEF Windows}
+    EmulatedX87 := IsProcessorFeaturePresent(PF_FLOATING_POINT_EMULATED);
+  {$ELSE}
+    {$IFDEF DebugMsgs}{$MESSAGE 'How to get whether FPU is emulated in linux?'}{$ENDIF}
     EmulatedX87 := False;
+  {$ENDIF}
     MMX         := fInfo.ProcessorFeatures.MMX and not EmulatedX87;
     SSE         := fInfo.ProcessorFeatures.SSE;
     SSE2        := fInfo.ProcessorFeatures.SSE2 and SSE;
