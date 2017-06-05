@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2017-05-15
+  ©František Milt 2017-06-05
 
-  Version 1.1.1
+  Version 1.1.2
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -504,10 +504,10 @@ asm
 // CR0 is not accessible in user mode (this function will cause exception).
 // If anyone have any idea on how to read CR0 from normal program, let me know.
 {$IFDEF x64}
-  MOV     RAX,  CR0
-{$ELSE x64}
+  DB  $0F, $20, $C0   // MOV  RAX,  CR0 (problems in FPC before 3.0)
+{$ELSE}
   MOV     EAX,  CR0
-{$ENDIF x64}
+{$ENDIF}
 end;
 
 //------------------------------------------------------------------------------
