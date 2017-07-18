@@ -444,15 +444,13 @@ uses
     , AnsiStrings
   {$IFEND};
 
-{$IFDEF Windows}
-Function GetProcessAffinityMask(hProcess: THandle; lpProcessAffinityMask,lpSystemAffinityMask: PPtrUInt): BOOL; stdcall; external kernel32;
-{$ENDIF}
-
 {==============================================================================}
 {   Auxiliary routines and declarations                                        }
 {==============================================================================}
 
 {$IFDEF Windows}
+
+Function GetProcessAffinityMask(hProcess: THandle; lpProcessAffinityMask,lpSystemAffinityMask: PPtrUInt): BOOL; stdcall; external kernel32;
 
 {$IF not Declared(PF_FLOATING_POINT_EMULATED)}
 const
