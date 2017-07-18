@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2017-06-05
+  ©František Milt 2017-07-18
 
-  Version 1.1.2
+  Version 1.1.3
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -53,6 +53,8 @@ unit SimpleCPUID;
 {$IFDEF PurePascal}
   {$MESSAGE WARN 'This unit cannot be compiled without ASM.'}
 {$ENDIF}
+
+{$TYPEINFO ON}
 
 interface
 
@@ -437,7 +439,14 @@ uses
     {$IFDEF FPC}jwaWinBase, {$ENDIF}Windows
   {$ELSE}
     unixtype, pthreads
-  {$ENDIF}, SysUtils;
+  {$ENDIF}, SysUtils
+  {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
+    , AnsiStrings
+  {$IFEND};
+
+{$IFDEF Windows}
+Function GetProcessAffinityMask(hProcess: THandle; lpProcessAffinityMask,lpSystemAffinityMask: PPtrUInt): BOOL; stdcall; external kernel32;
+{$ENDIF}
 
 {==============================================================================}
 {   Auxiliary routines and declarations                                        }
@@ -1326,7 +1335,11 @@ For i := 0 to 2 do
         Exit;
       end;
   end;
+{$IF not Defined(FPC) and (CompilerVersion >= 20)}
+SetLength(Str,AnsiStrings.StrLen(PAnsiChar(Str)));
+{$ELSE}
 SetLength(Str,StrLen(PAnsiChar(Str)));
+{$IFEND}
 fInfo.BrandString := Trim(String(Str));
 end;
 
@@ -1528,7 +1541,7 @@ var
 begin
 If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
   begin
-    If GetProcessAffinityMask(GetCurrentProcess,{%H-}ProcessAffinityMask,{%H-}SystemAffinityMask) then
+    If GetProcessAffinityMask(GetCurrentProcess,@ProcessAffinityMask,@SystemAffinityMask) then
       Result := GetBit(ProcessAffinityMask,ProcessorID)
     else
       raise Exception.CreateFmt('GetProcessAffinityMask failed with error 0x%.8x.',[GetLastError]);
