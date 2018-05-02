@@ -437,7 +437,7 @@ implementation
 
 uses
   {$IFDEF Windows}
-    {$IFDEF FPC}jwaWinBase, {$ENDIF}Windows
+    Windows
   {$ELSE}
     unixtype, pthreads
   {$ENDIF}, SysUtils
@@ -456,6 +456,8 @@ uses
 {$IFDEF Windows}
 
 Function GetProcessAffinityMask(hProcess: THandle; lpProcessAffinityMask,lpSystemAffinityMask: PPtrUInt): BOOL; stdcall; external kernel32;
+
+Function IsProcessorFeaturePresent(ProcessorFeature: DWORD): BOOL; stdcall; external kernel32;
 
 {$IF not Declared(PF_FLOATING_POINT_EMULATED)}
 const
