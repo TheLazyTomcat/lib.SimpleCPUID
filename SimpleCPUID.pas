@@ -49,6 +49,7 @@ unit SimpleCPUID;
   {$MODE ObjFPC}{$H+}
   {$ASMMODE Intel}
   {$DEFINE FPC_DisableWarns}
+  {$MACRO ON}
 {$ENDIF}
 
 {$IFDEF PurePascal}
@@ -446,7 +447,8 @@ uses
   {$IFEND};
 
 {$IFDEF FPC_DisableWarns}
-  {$WARN 4055 OFF} // Conversion between ordinals and pointers is not portable
+  {$DEFINE FPCDWM}
+  {$DEFINE W4055:={$WARN 4055 OFF}} // Conversion between ordinals and pointers is not portable
 {$ENDIF}
 
 {==============================================================================}
@@ -822,8 +824,10 @@ If Index >= 0 then
   begin
     SetLength(Str,12);
     Move(fLeafs[Index].Data.EBX,Pointer(PAnsiChar(Str))^,4);
+  {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
     Move(fLeafs[Index].Data.EDX,Pointer(PtrUInt(PAnsiChar(Str)) + 4)^,4);
     Move(fLeafs[Index].Data.ECX,Pointer(PtrUInt(PAnsiChar(Str)) + 8)^,4);
+  {$IFDEF FPCDWM}{$POP}{$ENDIF}
     fInfo.ManufacturerIDString := String(Str);
     fInfo.ManufacturerID := mnOthers;
     For i := Low(Manufacturers) to High(Manufacturers) do
@@ -1329,10 +1333,12 @@ For i := 0 to 2 do
     Index := IndexOf($80000002 + UInt32(i));
     If Index >= 0 then
       begin
+      {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
         Move(fLeafs[Index].Data.EAX,Pointer(PtrUInt(PAnsiChar(Str)) + PtrUInt(i * 16))^,4);
         Move(fLeafs[Index].Data.EBX,Pointer(PtrUInt(PAnsiChar(Str)) + PtrUInt(i * 16) + 4)^,4);
         Move(fLeafs[Index].Data.ECX,Pointer(PtrUInt(PAnsiChar(Str)) + PtrUInt(i * 16) + 8)^,4);
         Move(fLeafs[Index].Data.EDX,Pointer(PtrUInt(PAnsiChar(Str)) + PtrUInt(i * 16) + 12)^,4);
+      {$IFDEF FPCDWM}{$POP}{$ENDIF}
       end
     else
       begin
