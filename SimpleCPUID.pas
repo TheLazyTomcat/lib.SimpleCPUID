@@ -858,8 +858,8 @@ If Index >= 0 then
       fInfo.ProcessorFamily := GetBits(fLeafs[Index].Data.EAX,8,11) +
                                     GetBits(fLeafs[Index].Data.EAX,20,27);
     // processor model
-    If GetBits(fLeafs[Index].Data.EAX,8,11) in [$6,$F] then
-      fInfo.ProcessorModel := (GetBits(fLeafs[Index].Data.EAX,16,19) shr 4) or
+    if GetBits(fLeafs[Index].Data.EAX,8,11) in [$6,$F] then
+      fInfo.ProcessorModel := (GetBits(fLeafs[Index].Data.EAX,16,19) shl 4) +
                                     GetBits(fLeafs[Index].Data.EAX,4,7)
     else
       fInfo.ProcessorModel := GetBits(fLeafs[Index].Data.EAX,4,7);
