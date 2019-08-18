@@ -13,9 +13,20 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  ©František Milt 2018-10-22
-
   Version 1.1.4
+
+  Last changed 2019-08-18
+
+  ©2016-2019 František Milt
+
+  Contacts:
+    František Milt: frantisek.milt@gmail.com
+
+  Support:
+    If you find this code useful, please consider supporting its author(s) by
+    making a small donation using the following link(s):
+
+      https://www.paypal.me/FMilt
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -284,7 +295,7 @@ type
     The AMD K6 processor, model 6, uses bit 10 to indicate SEP. Beginning with
     model 7, bit 11 is used instead.
     Intel processors only report SEP when CPUID is executed in PM64.
-   }    
+   }
     SEP,            // [11] SYSCALL and SYSRET Instructions
     MTRR,           // [12] Memory Type Range Registers
     PGE,            // [13] Page Global Enable bit in CR4
@@ -613,7 +624,7 @@ asm
   Win64  Lin64
 
    ECX    EDI   Leaf of the CPUID info (parameter for CPUID instruction)
-   EDX    ESI   SubLeaf of the CPUID info (valid only for some leafs)   
+   EDX    ESI   SubLeaf of the CPUID info (valid only for some leafs)
     R8    RDX   Address of memory space (at least 16 bytes long) to which
                 resulting data (registers EAX, EBX, ECX and EDX, in that order)
                 will be copied
