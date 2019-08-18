@@ -29,7 +29,7 @@
       https://www.paypal.me/FMilt
 
   Dependencies:
-    AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
+    AuxTypes - github.com/TheLazyTomcat/Lib.AuxTypes
 
   Sources:
     https://en.wikipedia.org/wiki/CPUID
