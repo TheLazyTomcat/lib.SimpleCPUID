@@ -13,9 +13,9 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  Version 1.1.4
+  Version 1.1.4 (2018-10-30)
 
-  Last changed 2019-08-18
+  Last change 2019-08-19
 
   ©2016-2019 František Milt
 
@@ -27,6 +27,11 @@
     making a small donation using the following link(s):
 
       https://www.paypal.me/FMilt
+
+  Changelog:
+    For detailed changelog and history please refer to this git repository:
+
+      github.com/TheLazyTomcat/Lib.SimpleCPUID
 
   Dependencies:
     AuxTypes - github.com/TheLazyTomcat/Lib.AuxTypes
