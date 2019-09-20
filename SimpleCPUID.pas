@@ -15,7 +15,7 @@
 
   Version 1.1.4 (2018-10-30)
 
-  Last change 2019-08-19
+  Last change 2019-09-20
 
   ©2016-2019 František Milt
 
@@ -83,7 +83,14 @@ unit SimpleCPUID;
 interface
 
 uses
+  SysUtils,
   AuxTypes;
+
+type
+  ESCIDException = class(Exception);
+
+  ESCIDSystemError = class(ESCIDException);
+  ESCIDIndexOutOfBounds = class(ESCIDException);
 
 {==============================================================================}
 {   Main CPUID routines                                                        }
@@ -461,7 +468,7 @@ uses
     Windows
   {$ELSE}
     unixtype, pthreads
-  {$ENDIF}, SysUtils
+  {$ENDIF}
   {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
     , AnsiStrings
   {$IFEND};
@@ -500,7 +507,7 @@ Function getpid: pid_t; cdecl; external;
 procedure RaiseError(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inline; {$ENDIF}
 begin
 If ResultValue <> 0 then
-  raise Exception.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
+  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
 end;
 
 {$ENDIF}
@@ -764,7 +771,7 @@ begin
 If (Index >= Low(fLeafs)) and (Index <= High(fLeafs)) then
   Result := fLeafs[Index]
 else
-  raise Exception.CreateFmt('TSimpleCPUID.GetLeaf: Index (%d) out of bounds.',[Index]);
+  raise ESCIDIndexOutOfBounds.CreateFmt('TSimpleCPUID.GetLeaf: Index (%d) out of bounds.',[Index]);
 end;
 
 {------------------------------------------------------------------------------}
@@ -781,7 +788,7 @@ If (Index >= Low(fLeafs)) and (Index <= High(fLeafs)) then
       fLeafs[i] := fLeafs[i + 1];
     SetLength(fLeafs,Length(fLeafs) - 1);
   end
-else raise Exception.CreateFmt('TSimpleCPUID.DeleteLeaf: Index (%d) out of bounds.',[Index]);
+else raise ESCIDIndexOutOfBounds.CreateFmt('TSimpleCPUID.DeleteLeaf: Index (%d) out of bounds.',[Index]);
 end;
 
 //------------------------------------------------------------------------------
@@ -1575,7 +1582,7 @@ If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
     If GetProcessAffinityMask(GetCurrentProcess,@ProcessAffinityMask,@SystemAffinityMask) then
       Result := GetBit(ProcessAffinityMask,ProcessorID)
     else
-      raise Exception.CreateFmt('GetProcessAffinityMask failed with error 0x%.8x.',[GetLastError]);
+      raise ESCIDException.CreateFmt('GetProcessAffinityMask failed with error 0x%.8x.',[GetLastError]);
   end
 else Result := False;
 end;
@@ -1615,7 +1622,7 @@ If ProcessorAvailable(fProcessorID) then
       SetThreadAffinity(OldProcessorMask);
     end;
   end
-else raise Exception.CreateFmt('TSimpleCPUIDEx.Initialize: Logical processor #%d not available.',[fProcessorID]);
+else raise ESCIDException.CreateFmt('TSimpleCPUIDEx.Initialize: Logical processor #%d not available.',[fProcessorID]);
 end;
 
 end.
