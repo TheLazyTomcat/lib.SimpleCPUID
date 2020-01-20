@@ -13,11 +13,11 @@
     features) obtained by the CPUID instruction on x86(-64) processors.
     Should be compatible with any Windows and Unix system.
 
-  Version 1.1.4 (2018-10-30)
+  Version 1.1.5 (2020-01-20)
 
-  Last change 2019-09-20
+  Last change 2020-01-20
 
-  ©2016-2019 František Milt
+  ©2016-2020 František Milt
 
   Contacts:
     František Milt: frantisek.milt@gmail.com
@@ -55,10 +55,10 @@ unit SimpleCPUID;
 
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
+{$ELSEIF Defined(LINUX) and Defined(FPC)}
+  {$DEFINE Linux}
 {$ELSE}
-  {$IF not (Defined(UNIX) or Defined(POSIX))}
-    {$MESSAGE FATAL 'Unsupported operating system.'}
-  {$IFEND}
+  {$MESSAGE FATAL 'Unsupported operating system.'}
 {$IFEND}
 
 {$IFDEF FPC}
@@ -1590,6 +1590,7 @@ end;
 begin
 If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
   begin
+    // sched_getaffinity called with process id (getpid) returns mask of main thread (process mask)
     RaiseError(sched_getaffinity(getpid,SizeOf(ProcessAffinityMask),@ProcessAffinityMask),'sched_getaffinity');
     Result := GetBit(ProcessAffinityMask,ProcessorID);
   end
