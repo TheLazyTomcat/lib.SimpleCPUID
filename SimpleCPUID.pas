@@ -11,11 +11,12 @@
 
     Small library designed to provide some basic parsed information (mainly CPU
     features) obtained by the CPUID instruction on x86(-64) processors.
-    Should be compatible with any Windows and Unix system.
+    Should be compatible with any Windows and Linux system running on x86(-64)
+    architecture.
 
-  Version 1.1.5 (2020-01-20)
+  Version 1.1.6 (2020-03-09)
 
-  Last change 2020-01-20
+  Last change 2020-03-09
 
   ©2016-2020 František Milt
 
@@ -44,6 +45,20 @@
 
 ===============================================================================}
 unit SimpleCPUID;
+
+{
+  SimpleCPUID_PurePascal
+
+  If you want to compile this unit without ASM, don't want to or cannot define
+  PurePascal for the entire project and at the same time you don't want to or
+  cannot make changes to this unit, define this symbol for the entire project
+  and this unit will be compiled in PurePascal mode.
+
+  This unit cannot be compiled without asm, but meh...
+}
+{$IFDEF SimpleCPUID_PurePascal}
+  {$DEFINE PurePascal}
+{$ENDIF}
 
 {$IF Defined(CPUX86_64) or Defined(CPUX64)}
   {$DEFINE x64}
@@ -467,7 +482,7 @@ uses
   {$IFDEF Windows}
     Windows
   {$ELSE}
-    unixtype, pthreads
+    baseunix, unixtype, pthreads
   {$ENDIF}
   {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
     , AnsiStrings
@@ -508,6 +523,14 @@ procedure RaiseError(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inl
 begin
 If ResultValue <> 0 then
   raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
+end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+procedure RaiseErrorErrNo(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inline; {$ENDIF}
+begin
+If ResultValue <> 0 then
+  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,errno]);
 end;
 
 {$ENDIF}
@@ -1591,7 +1614,7 @@ begin
 If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
   begin
     // sched_getaffinity called with process id (getpid) returns mask of main thread (process mask)
-    RaiseError(sched_getaffinity(getpid,SizeOf(ProcessAffinityMask),@ProcessAffinityMask),'sched_getaffinity');
+    RaiseErrorErrNo(sched_getaffinity(getpid,SizeOf(ProcessAffinityMask),@ProcessAffinityMask),'sched_getaffinity');
     Result := GetBit(ProcessAffinityMask,ProcessorID);
   end
 else Result := False;
