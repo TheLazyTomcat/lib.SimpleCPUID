@@ -16,7 +16,7 @@
 
   Version 1.1.6 (2020-03-09)
 
-  Last change 2020-03-09
+  Last change 2020-08-02
 
   ©2016-2020 František Milt
 
@@ -77,7 +77,7 @@ unit SimpleCPUID;
 {$IFEND}
 
 {$IFDEF FPC}
-  {$MODE ObjFPC}{$H+}
+  {$MODE ObjFPC}
   {$INLINE ON}
   {$DEFINE CanInline}
   {$ASMMODE Intel}
@@ -90,6 +90,7 @@ unit SimpleCPUID;
     {$UNDEF CanInline}
   {$IFEND}
 {$ENDIF}
+{$H+}
 
 {$IFDEF PurePascal}
   {$MESSAGE WARN 'This unit cannot be compiled without ASM.'}
