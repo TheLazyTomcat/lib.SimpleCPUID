@@ -14,9 +14,9 @@
     Should be compatible with any Windows and Linux system running on x86(-64)
     architecture.
 
-  Version 1.1.6 (2020-03-09)
+  Version 1.1.7 (2020-09-09)
 
-  Last change 2020-08-02
+  Last change 2020-09-09
 
   ©2016-2020 František Milt
 
@@ -483,7 +483,7 @@ uses
   {$IFDEF Windows}
     Windows
   {$ELSE}
-    baseunix, unixtype, pthreads
+    baseunix, pthreads
   {$ENDIF}
   {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
     , AnsiStrings
@@ -513,6 +513,7 @@ const
 
 {$ELSE}
 
+Function errno_ptr: pcInt; cdecl; external name '__errno_location';
 Function pthread_getaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
 Function pthread_setaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
 Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: Pointer): cint; cdecl; external;
@@ -531,7 +532,7 @@ end;
 procedure RaiseErrorErrNo(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inline; {$ENDIF}
 begin
 If ResultValue <> 0 then
-  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,errno]);
+  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,errno_ptr^]);
 end;
 
 {$ENDIF}
