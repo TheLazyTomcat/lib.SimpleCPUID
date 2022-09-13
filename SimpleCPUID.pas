@@ -16,9 +16,9 @@
 
   Version 1.1.8 (2021-01-05)
 
-  Last change 2021-01-05
+  Last change 2022-09-13
 
-  ©2016-2021 František Milt
+  ©2016-2022 František Milt
 
   Contacts:
     František Milt: frantisek.milt@gmail.com
@@ -102,6 +102,9 @@ uses
   SysUtils,
   AuxTypes;
 
+{===============================================================================
+    Library-specific exceptions
+===============================================================================}
 type
   ESCIDException = class(Exception);
 
@@ -122,7 +125,6 @@ procedure CPUID(Leaf: UInt32; Result: Pointer); overload;{$IFDEF CanInline} inli
                                   TSimpleCPUID
 --------------------------------------------------------------------------------
 ===============================================================================}
-
 type
   TCPUIDResult = packed record
     EAX,EBX,ECX,EDX:  UInt32;
@@ -405,17 +407,16 @@ type
 {===============================================================================
     TSimpleCPUID - class declaration
 ===============================================================================}
-
+type
   TSimpleCPUID = class(TObject)
-  private
+  protected
     fIncUnsuppLeafs:  Boolean;
     fSupported:       Boolean;
     fLeafs:           TCPUIDLeafs;
     fInfo:            TCPUIDInfo;
     fHighestStdLeaf:  TCPUIDResult;
-    Function GetLeafCount: Integer;
-    Function GetLeaf(Index: Integer): TCPUIDLeaf;
-  protected
+    Function GetLeafCount: Integer; virtual;
+    Function GetLeaf(Index: Integer): TCPUIDLeaf; virtual;
     procedure DeleteLeaf(Index: Integer); virtual;  // only for internal use
     procedure InitLeafs(Mask: UInt32); virtual;
     procedure InitStdLeafs; virtual;                // standard leafs
@@ -463,11 +464,10 @@ type
 {===============================================================================
     TSimpleCPUIDEx - class declaration                                               
 ===============================================================================}
-
+type
   TSimpleCPUIDEx = class(TSimpleCPUID)
-  private
-    fProcessorID: Integer;
   protected
+    fProcessorID: Integer;
     class Function SetThreadAffinity(ProcessorMask: PtrUInt): PtrUInt; virtual;
   public
     class Function ProcessorAvailable(ProcessorID: Integer): Boolean; virtual;
@@ -757,7 +757,6 @@ end;
                                   TSimpleCPUID
 --------------------------------------------------------------------------------
 ===============================================================================}
-
 type
   TManufacturersItem = record
     IDStr:  String;
@@ -784,9 +783,8 @@ const
 {===============================================================================
     TSimpleCPUID - class implementation
 ===============================================================================}
-
 {-------------------------------------------------------------------------------
-    TSimpleCPUID - private methods
+    TSimpleCPUID - protected methods
 -------------------------------------------------------------------------------}
 
 Function TSimpleCPUID.GetLeafCount: Integer;
@@ -804,9 +802,7 @@ else
   raise ESCIDIndexOutOfBounds.CreateFmt('TSimpleCPUID.GetLeaf: Index (%d) out of bounds.',[Index]);
 end;
 
-{-------------------------------------------------------------------------------
-    TSimpleCPUID - protected methods
--------------------------------------------------------------------------------}
+//------------------------------------------------------------------------------
 
 procedure TSimpleCPUID.DeleteLeaf(Index: Integer);
 var
@@ -1573,11 +1569,9 @@ end;
                                  TSimpleCPUIDEx
 --------------------------------------------------------------------------------
 ===============================================================================}
-
 {===============================================================================
     TSimpleCPUIDEx - class implementation
-===============================================================================}
-
+===============================================================================} 
 {-------------------------------------------------------------------------------
     TSimpleCPUIDEx - protected methods
 -------------------------------------------------------------------------------}
