@@ -16,7 +16,7 @@
 
   Version 1.1.8 (2021-01-05)
 
-  Last change 2022-09-13
+  Last change 2022-10-23
 
   ©2016-2022 František Milt
 
@@ -45,7 +45,6 @@
 
 ===============================================================================}
 unit SimpleCPUID;
-
 {
   SimpleCPUID_PurePascal
 
@@ -92,9 +91,9 @@ unit SimpleCPUID;
 {$ENDIF}
 {$H+}
 
-{$IFDEF PurePascal}
+{$IF Defined(PurePascal) and not Defined(CompTest)}
   {$MESSAGE WARN 'This unit cannot be compiled without ASM.'}
-{$ENDIF}
+{$IFEND}
 
 interface
 
