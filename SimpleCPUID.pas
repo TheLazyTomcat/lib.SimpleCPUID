@@ -14,11 +14,11 @@
     Should be compatible with any Windows and Linux system running on x86(-64)
     architecture.
 
-  Version 1.1.8 (2021-01-05)
+  Version 1.1.9 (2023-04-02)
 
-  Last change 2022-10-23
+  Last change 2023-04-02
 
-  ©2016-2022 František Milt
+  ©2016-2023 František Milt
 
   Contacts:
     František Milt: frantisek.milt@gmail.com
@@ -107,8 +107,9 @@ uses
 type
   ESCIDException = class(Exception);
 
-  ESCIDSystemError = class(ESCIDException);
+  ESCIDSystemError      = class(ESCIDException);
   ESCIDIndexOutOfBounds = class(ESCIDException);
+  ESCIDInvalidProcessor = class(ESCIDException);
 
 {===============================================================================
     Main CPUID routines
@@ -460,6 +461,10 @@ type
                                  TSimpleCPUIDEx
 --------------------------------------------------------------------------------
 ===============================================================================}
+type
+  TCPUSet = {$IFNDEF Windows}array[0..Pred(128 div SizeOf(PtrUInt))] of{$ENDIF} PtrUInt;
+  PCPUSet = ^TCPUSet;
+
 {===============================================================================
     TSimpleCPUIDEx - class declaration                                               
 ===============================================================================}
@@ -467,7 +472,7 @@ type
   TSimpleCPUIDEx = class(TSimpleCPUID)
   protected
     fProcessorID: Integer;
-    class Function SetThreadAffinity(ProcessorMask: PtrUInt): PtrUInt; virtual;
+    class procedure SetThreadAffinity(var ProcessorMask: TCPUSet); virtual;
   public
     class Function ProcessorAvailable(ProcessorID: Integer): Boolean; virtual;
     constructor Create(ProcessorID: Integer = 0; DoInitialize: Boolean = True; IncUnsupportedLeafs: Boolean = True);
@@ -481,11 +486,15 @@ uses
   {$IFDEF Windows}
     Windows
   {$ELSE}
-    baseunix, pthreads
+    baseunix
   {$ENDIF}
   {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
     , AnsiStrings
   {$IFEND};
+
+{$IFNDEF Windows}
+  {$LINKLIB C}
+{$ENDIF}
 
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
@@ -503,50 +512,73 @@ Function GetProcessAffinityMask(hProcess: THandle; lpProcessAffinityMask,lpSyste
 //------------------------------------------------------------------------------
 
 {$ELSE}
+Function getpid: pid_t; cdecl; external;
 
 Function errno_ptr: pcInt; cdecl; external name '__errno_location';
-Function pthread_getaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
-Function pthread_setaffinity_np(thread: pthread_t; cpusetsize: size_t; cpuset: Pointer): cint; cdecl; external;
-Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: Pointer): cint; cdecl; external;
-Function getpid: pid_t; cdecl; external;
+
+Function sched_getaffinity(pid: pid_t; cpusetsize: size_t; mask: PCPUSet): cint; cdecl; external;
+Function sched_setaffinity(pid: pid_t; cpusetsize: size_t; mask: PCPUSet): cint; cdecl; external;
 
 //------------------------------------------------------------------------------
 
-procedure RaiseError(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inline; {$ENDIF}
+threadvar
+  ThrErrorCode: cInt;
+
+Function CheckErr(ReturnedValue: cInt): Boolean;
 begin
-If ResultValue <> 0 then
-  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,ResultValue]);
+Result := ReturnedValue = 0;
+If Result then
+  ThrErrorCode := 0
+else
+  ThrErrorCode := errno_ptr^;
 end;
 
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+//------------------------------------------------------------------------------
 
-procedure RaiseErrorErrNo(ResultValue: cint; FuncName: String);{$IFDEF CanInline} inline; {$ENDIF}
+Function GetLastError: cInt;
 begin
-If ResultValue <> 0 then
-  raise ESCIDSystemError.CreateFmt('%s failed with error %d.',[FuncName,errno_ptr^]);
+Result := ThrErrorCode;
 end;
 
 {$ENDIF}
 
 //------------------------------------------------------------------------------
 
+{$IF not(Defined(Windows) and Defined(x86))}
 Function GetBit(Value: UInt32; Bit: Integer): Boolean; overload;{$IFDEF CanInline} inline; {$ENDIF}
 begin
 Result := ((Value shr Bit) and 1) <> 0;
 end;
+{$IFEND}
 
 //   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---   ---
 
-Function GetBit(Value: UInt64; Bit: Integer): Boolean; overload;{$IFDEF CanInline} inline; {$ENDIF}
+Function GetBit(const Value: TCPUSet; Bit: Integer): Boolean; overload;{$IFDEF CanInline} inline; {$ENDIF}
 begin
+{$IFDEF Windows}
 Result := ((Value shr Bit) and 1) <> 0;
+{$ELSE}
+{$IFDEF x64}
+Result := Value[Bit shr 6] and PtrUInt(PtrUInt(1) shl (Bit and 63)) <> 0;
+{$ELSE}
+Result := Value[Bit shr 5] and PtrUInt(PtrUInt(1) shl (Bit and 31)) <> 0;
+{$ENDIF}
+{$ENDIF}
 end;
 
 //------------------------------------------------------------------------------
 
-Function SetBit(Value: UInt32; Bit: Integer): UInt32;{$IFDEF CanInline} inline; {$ENDIF}
+procedure SetBit(var Value: TCPUSet; Bit: Integer);{$IFDEF CanInline} inline; {$ENDIF}
 begin
-Result := Value or (UInt32(1) shl Bit);
+{$IFDEF Windows}
+Value := Value or PtrUInt(PtrUInt(1) shl Bit);
+{$ELSE}
+{$IFDEF x64}
+Value[Bit shr 6] := Value[Bit shr 6] or PtrUInt(PtrUInt(1) shl (Bit and 63));
+{$ELSE}
+Value[Bit shr 5] := Value[Bit shr 5] or PtrUInt(PtrUInt(1) shl (Bit and 31));
+{$ENDIF}
+{$ENDIF}
 end;
 
 //------------------------------------------------------------------------------
@@ -554,19 +586,6 @@ end;
 Function GetBits(Value: UInt32; FromBit, ToBit: Integer): UInt32;{$IFDEF CanInline} inline; {$ENDIF}
 begin
 Result := (Value and ($FFFFFFFF shr (31 - ToBit))) shr FromBit;
-end;
-
-//------------------------------------------------------------------------------
-
-Function GetCR0: NativeUInt; assembler; register;
-asm
-// CR0 is not accessible in user mode (this function will cause exception).
-// If anyone have any idea on how to read CR0 from normal program, let me know.
-{$IFDEF x64}
-  DB  $0F, $20, $C0   // MOV  RAX,  CR0 (problems in FPC before 3.0)
-{$ELSE}
-  MOV     EAX,  CR0
-{$ENDIF}
 end;
 
 //------------------------------------------------------------------------------
@@ -1575,15 +1594,31 @@ end;
     TSimpleCPUIDEx - protected methods
 -------------------------------------------------------------------------------}
 
-class Function TSimpleCPUIDEx.SetThreadAffinity(ProcessorMask: PtrUInt): PtrUInt;
-begin
+class procedure TSimpleCPUIDEx.SetThreadAffinity(var ProcessorMask: TCPUSet);
 {$IFDEF Windows}
-Result := SetThreadAffinityMask(GetCurrentThread,ProcessorMask);
-{$ELSE}
-RaiseError(pthread_getaffinity_np(pthread_self,SizeOf(Result),@Result),'pthread_getaffinity_np');
-RaiseError(pthread_setaffinity_np(pthread_self,SizeOf(ProcessorMask),@ProcessorMask),'pthread_setaffinity_np');
-{$ENDIF}
+begin
+ProcessorMask := SetThreadAffinityMask(GetCurrentThread,ProcessorMask);
+If ProcessorMask = 0 then
+  raise ESCIDSystemError.CreateFmt('TSimpleCPUIDEx.SetThreadAffinity:' +
+    ' Failed to set thread affinity mask (%d).',[Integer(GetLastError)]);
 end;
+{$ELSE}
+var
+  OldProcessorMask: TCPUSet;
+begin
+// pid zero for the calling thread
+If CheckErr(sched_getaffinity(0,SizeOf(TCPUSet),@OldProcessorMask)) then
+  begin
+    If CheckErr(sched_setaffinity(0,SizeOf(TCPUSet),@ProcessorMask)) then
+      ProcessorMask := OldProcessorMask
+    else
+      raise ESCIDSystemError.CreateFmt('TSimpleCPUIDEx.SetThreadAffinity:' +
+        ' Failed to set thread affinity mask (%d).',[Integer(GetLastError)]);
+  end
+else raise ESCIDSystemError.CreateFmt('TSimpleCPUIDEx.SetThreadAffinity:' +
+  ' Failed to get thread affinity mask (%d).',[Integer(GetLastError)]);
+end;
+{$ENDIF}
 
 {-------------------------------------------------------------------------------
     TSimpleCPUIDEx - public methods
@@ -1591,30 +1626,26 @@ end;
 
 class Function TSimpleCPUIDEx.ProcessorAvailable(ProcessorID: Integer): Boolean;
 var
-  ProcessAffinityMask:  PtrUInt;
+  ProcessAffinityMask:  TCPUSet;
 {$IFDEF Windows}
-  SystemAffinityMask:   PtrUInt;
+  SystemAffinityMask:   TCPUSet;
+{$ENDIF}
 begin
-If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
+If (ProcessorID >= 0) and (ProcessorID < (SizeOf(TCPUSet) * 8)) then
   begin
+  {$IFDEF Windows}
     If GetProcessAffinityMask(GetCurrentProcess,@ProcessAffinityMask,@SystemAffinityMask) then
+  {$ELSE}
+    // sched_getaffinity called with process id (getpid) returns mask of main thread (process mask)
+    If CheckErr(sched_getaffinity(getpid,SizeOf(TCPUSet),@ProcessAffinityMask)) then
+  {$ENDIF}
       Result := GetBit(ProcessAffinityMask,ProcessorID)
     else
-      raise ESCIDException.CreateFmt('GetProcessAffinityMask failed with error 0x%.8x.',[GetLastError]);
+      raise ESCIDSystemError.CreateFmt('TSimpleCPUIDEx.ProcessorAvailable:' +
+        ' Failed to get process affinity mask (%d).',[Integer(GetLastError)]);
   end
 else Result := False;
 end;
-{$ELSE}
-begin
-If (ProcessorID >= 0) and (ProcessorID < (SizeOf(PtrUInt) * 8)) then
-  begin
-    // sched_getaffinity called with process id (getpid) returns mask of main thread (process mask)
-    RaiseErrorErrNo(sched_getaffinity(getpid,SizeOf(ProcessAffinityMask),@ProcessAffinityMask),'sched_getaffinity');
-    Result := GetBit(ProcessAffinityMask,ProcessorID);
-  end
-else Result := False;
-end;
-{$ENDIF}
 
 //------------------------------------------------------------------------------
 
@@ -1630,18 +1661,21 @@ end;
 
 procedure TSimpleCPUIDEx.Initialize;
 var
-  OldProcessorMask: PtrUInt;
+  ProcessorMask:  TCPUSet;
 begin
 If ProcessorAvailable(fProcessorID) then
   begin
-    OldProcessorMask := SetThreadAffinity(SetBit(0,fProcessorID));
+    FillChar(Addr(ProcessorMask)^,SizeOf(ProcessorMask),0);
+    SetBit(ProcessorMask,fProcessorID);
+    SetThreadAffinity(ProcessorMask);
     try
       inherited Initialize;
     finally
-      SetThreadAffinity(OldProcessorMask);
+      // restore the affinity
+      SetThreadAffinity(ProcessorMask);
     end;
   end
-else raise ESCIDException.CreateFmt('TSimpleCPUIDEx.Initialize: Logical processor #%d not available.',[fProcessorID]);
+else raise ESCIDInvalidProcessor.CreateFmt('TSimpleCPUIDEx.Initialize: Processor ID %d not available.',[fProcessorID]);
 end;
 
 end.
