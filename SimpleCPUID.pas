@@ -14,9 +14,9 @@
     Should be compatible with any Windows and Linux system running on x86(-64)
     architecture.
 
-  Version 1.1.9 (2023-04-02)
+  Version 1.2 (2023-04-04)
 
-  Last change 2023-04-02
+  Last change 2023-04-04
 
   ©2016-2023 František Milt
 
@@ -40,7 +40,9 @@
   Sources:
     https://en.wikipedia.org/wiki/CPUID
     http://sandpile.org/x86/cpuid.htm
-    Intel® 64 and IA-32 Architectures Software Developer’s Manual (November 2020)
+    Intel® 64 and IA-32 Architectures Software Developer’s Manual (April 2022)
+    AMD64 Architecture Programmer’s Manual; Publication #40332 Revision 4.02
+    (November 2020)
     AMD CPUID Specification; Publication #25481 Revision 2.34 (September 2010)
 
 ===============================================================================}
@@ -348,7 +350,9 @@ type
     TSCP,           // [27] RDTSCP and IA32_TSC_AUX are available
     LM,             // [29] AMD64/EM64T, Long Mode
     _3DNowExt,      // [30] Extended 3DNow!
-    _3DNow:         // [31] 3DNow!
+    _3DNow,         // [31] 3DNow!
+  {leaf $80000007, EDX register}
+    ITSC:           // [08] Invariant TSC
       Boolean;
   end;
 
@@ -437,6 +441,7 @@ type
     procedure InitExtLeafs; virtual;                // extended leafs
     procedure ProcessLeaf_8000_0001; virtual;
     procedure ProcessLeaf_8000_0002_to_8000_0004; virtual;
+    procedure ProcessLeaf_8000_0007; virtual;
     procedure ProcessLeaf_8000_001D; virtual;
     procedure InitTNMLeafs; virtual;                // Transmeta leafs
     procedure InitCNTLeafs; virtual;                // Centaur leafs
@@ -483,14 +488,14 @@ type
 implementation
 
 uses
-  {$IFDEF Windows}
-    Windows
-  {$ELSE}
-    baseunix
-  {$ENDIF}
-  {$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
-    , AnsiStrings
-  {$IFEND};
+{$IFDEF Windows}
+  Windows
+{$ELSE}
+  baseunix
+{$ENDIF}
+{$IF not Defined(FPC) and (CompilerVersion >= 20)}  // Delphi 2009+
+  , AnsiStrings
+{$IFEND};
 
 {$IFNDEF Windows}
   {$LINKLIB C}
@@ -1318,6 +1323,7 @@ InitLeafs($80000000);
 // process individual leafs
 ProcessLeaf_8000_0001;
 ProcessLeaf_8000_0002_to_8000_0004;
+ProcessLeaf_8000_0007;
 ProcessLeaf_8000_001D;
 end;
 
@@ -1428,6 +1434,17 @@ SetLength(Str,AnsiStrings.StrLen(PAnsiChar(Str)));
 SetLength(Str,StrLen(PAnsiChar(Str)));
 {$IFEND}
 fInfo.BrandString := Trim(String(Str));
+end;
+
+//------------------------------------------------------------------------------
+
+procedure TSimpleCPUID.ProcessLeaf_8000_0007;
+var
+  Index:  Integer;
+begin
+Index := IndexOf($80000007);
+If Index >= 0 then
+  fInfo.ExtendedProcessorFeatures.ITSC := GetBit(fLeafs[Index].Data.EDX,8);
 end;
 
 //------------------------------------------------------------------------------
