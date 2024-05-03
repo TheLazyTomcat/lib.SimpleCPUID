@@ -43,11 +43,11 @@
     - AMD CPUID Specification; Publication #25481 Revision 2.34 (September 2010)
 
   Dependencies:
-   *AuxExceptions - github.com/TheLazyTomcat/Lib.AuxExceptions
+  * AuxExceptions - github.com/TheLazyTomcat/Lib.AuxExceptions
     AuxTypes      - github.com/TheLazyTomcat/Lib.AuxTypes
 
-  Library AuxExceptions is required only when rebasing local exception
-  classes (see symbol SimpleCPUID_UseAuxExceptions for details).
+  Library AuxExceptions is required only when rebasing local exception classes
+  (see symbol SimpleCPUID_UseAuxExceptions for details).
 
   Indirect dependencies:
     StrRect     - github.com/TheLazyTomcat/Lib.StrRect
